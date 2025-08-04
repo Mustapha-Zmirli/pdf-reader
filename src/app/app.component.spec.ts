@@ -14,16 +14,10 @@ describe('AppComponent', () => {
     expect(app).toBeTruthy();
   });
 
-  it(`should have the 'pdf-reader-app' title`, () => {
-    const fixture = TestBed.createComponent(AppComponent);
-    const app = fixture.componentInstance;
-    expect(app.title).toEqual('pdf-reader-app');
-  });
-
-  it('should render title', () => {
+  it('should render the PDF Reader Pro title', () => {
     const fixture = TestBed.createComponent(AppComponent);
     fixture.detectChanges();
     const compiled = fixture.nativeElement as HTMLElement;
-    expect(compiled.querySelector('h1')?.textContent).toContain('Hello, pdf-reader-app');
+    expect(compiled.querySelector('h1')?.textContent).toContain('PDF Reader Pro');
   });
 });

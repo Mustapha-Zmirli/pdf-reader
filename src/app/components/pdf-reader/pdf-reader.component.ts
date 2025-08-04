@@ -3,6 +3,8 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import * as pdfjsLib from 'pdfjs-dist';
 import { PdfViewerOptions, TextSelection, PopupAction, TextSelectionEvent, ActionExecutedEvent } from './pdf-reader.types';
+import { TextSelectionDialogComponent } from '../text-selection-dialog/text-selection-dialog.component';
+import { TextAnalysisService } from '../../service/text-analysis.service';
 
 // Configure PDF.js worker
 if (typeof window !== 'undefined') {
@@ -45,7 +47,7 @@ interface SelectionRect {
 @Component({
   selector: 'app-pdf-reader',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, TextSelectionDialogComponent],
   template: `
     <div class="pdf-reader-container" [ngClass]="{'fullscreen': isFullscreen}">
       <!-- Toolbar -->
@@ -128,6 +130,15 @@ interface SelectionRect {
               (change)="onTextSelectionToggle()">
             <span>Sélection de texte</span>
           </label>
+          
+          <!-- NEW: Dialog Mode Toggle -->
+          <label class="toolbar-checkbox">
+            <input 
+              type="checkbox" 
+              [(ngModel)]="useDialogMode"
+              (change)="onDialogModeToggle()">
+            <span>Mode dialogue</span>
+          </label>
         </div>
 
         <!-- Current file info -->
@@ -151,36 +162,35 @@ interface SelectionRect {
         </div>
 
         <!-- Welcome message when no PDF is loaded -->
-       <div class="pdf-welcome" *ngIf="!isLoading && !error && !pdfDocument">
-  <div class="welcome-content">
-    <div class="welcome-icon">📄</div>
-    <h3>Lecteur PDF Pro</h3>
-    <p>Chargez un fichier PDF pour commencer la lecture</p>
-    <button class="welcome-upload-btn" (click)="triggerFileUpload()">
-      📁 Sélectionner un fichier PDF
-    </button>
-    
-
-  </div>
-</div>
+        <div class="pdf-welcome" *ngIf="!isLoading && !error && !pdfDocument">
+          <div class="welcome-content">
+            <div class="welcome-icon">📄</div>
+            <h3>Lecteur PDF Pro</h3>
+            <p>Chargez un fichier PDF pour commencer la lecture</p>
+            <button class="welcome-upload-btn" (click)="triggerFileUpload()">
+              📁 Sélectionner un fichier PDF
+            </button>
+          </div>
+        </div>
 
         <div class="pdf-canvas-container" *ngIf="!isLoading && !error && pdfDocument">
           <canvas 
             #pdfCanvas 
             class="pdf-canvas">
           </canvas>
- <div 
-    #textLayer 
-    class="text-layer"
-    *ngIf="enableTextSelection"
-    (mousedown)="onSelectionStart($event)"
-    (mousemove)="onSelectionMove($event)"
-    (mouseup)="onSelectionEnd($event)"
-    (click)="onTextLayerClick($event)"
-    (dblclick)="onTextLayerDoubleClick($event)"
-    (selectstart)="preventSelection($event)"
-    (dragstart)="preventSelection($event)">
-  </div>
+          
+          <div 
+            #textLayer 
+            class="text-layer"
+            *ngIf="enableTextSelection"
+            (mousedown)="onSelectionStart($event)"
+            (mousemove)="onSelectionMove($event)"
+            (mouseup)="onSelectionEnd($event)"
+            (click)="onTextLayerClick($event)"
+            (dblclick)="onTextLayerDoubleClick($event)"
+            (selectstart)="preventSelection($event)"
+            (dragstart)="preventSelection($event)">
+          </div>
 
           <!-- Selection Overlay -->
           <div class="selection-overlay" #selectionOverlay *ngIf="enableTextSelection">
@@ -196,10 +206,10 @@ interface SelectionRect {
         </div>
       </div>
 
-      <!-- Selection Popup -->
+      <!-- Selection Popup (Legacy Mode) -->
       <div 
         class="selection-popup" 
-        *ngIf="showPopup && currentSelection"
+        *ngIf="showPopup && currentSelection && !useDialogMode"
         [style.left.px]="popupPosition.x"
         [style.top.px]="popupPosition.y"
         #popup>
@@ -235,6 +245,14 @@ interface SelectionRect {
           </div>
         </div>
       </div>
+
+      <!-- NEW: Enhanced Dialog Mode -->
+      <app-text-selection-dialog
+        [(visible)]="showDialog"
+        [selection]="currentSelection"
+        (actionExecuted)="onDialogActionExecuted($event)"
+        (dialogClosed)="onDialogClosed()">
+      </app-text-selection-dialog>
     </div>
   `,
   styles: [`
@@ -470,37 +488,6 @@ interface SelectionRect {
       transform: translateY(-1px);
       box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
     }
-
-    .welcome-tips {
-  margin-top: 32px;
-  text-align: left;
-  background: rgba(59, 130, 246, 0.05);
-  padding: 20px;
-  border-radius: 12px;
-  border: 1px solid rgba(59, 130, 246, 0.1);
-}
-
-.welcome-tips p {
-  margin: 0 0 12px 0;
-  font-weight: 600;
-  color: #3b82f6;
-  text-align: center;
-}
-
-.welcome-tips ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.welcome-tips li {
-  padding: 6px 0;
-  font-size: 14px;
-  color: #4b5563;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 
     .pdf-error {
       text-align: center;
@@ -767,7 +754,7 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
   private currentPdfData: ArrayBuffer | null = null;
   private currentPdfUrl: string | null = null;
 
-  // Render management - Key additions for fixing the canvas error
+  // Render management
   private currentRenderTask: any = null;
   private isRendering = false;
   private pendingRender = false;
@@ -787,6 +774,8 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
   hasActiveSelection = false;
   currentSelection: TextSelection | null = null;
   showPopup = false;
+  showDialog = false; // NEW: Dialog visibility
+  useDialogMode = true; // NEW: Toggle between popup and dialog modes
   popupPosition = { x: 0, y: 0 };
   loadingActions = new Set<string>();
   isActionLoading = false;
@@ -873,13 +862,15 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     }
   ];
 
-  constructor(private cdr: ChangeDetectorRef) {}
+  // UPDATED: Constructor with TextAnalysisService injection
+  constructor(
+    private cdr: ChangeDetectorRef,
+    private textAnalysisService: TextAnalysisService
+  ) {}
 
   ngOnInit() {
     this.initializeOptions();
     this.setupEventListeners();
-    
-  
   }
 
   ngOnDestroy() {
@@ -888,13 +879,11 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     if (this.isFullscreen) {
       this.exitFullscreen();
     }
-    // Clean up object URLs to prevent memory leaks
     this.cleanupObjectUrls();
   }
 
   @HostListener('window:resize', ['$event'])
   onWindowResize() {
-    // Cancel any pending renders and schedule a new one
     this.cancelCurrentRender();
     setTimeout(() => {
       if (this.pdfDocument && !this.isLoading) {
@@ -928,6 +917,8 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
 
   private initializeOptions() {
     this.enableTextSelection = this.options.enableTextSelection !== false;
+    // NEW: Initialize dialog mode from options
+    this.useDialogMode = this.options.useDialogMode !== false;
   }
 
   private setupEventListeners() {
@@ -971,11 +962,8 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     this.loadingMessage = `Chargement de ${file.name}...`;
     
     try {
-      // Read file as ArrayBuffer for consistent processing
       const arrayBuffer = await this.readFileAsArrayBuffer(file);
       await this.loadPdfFromData(arrayBuffer);
-      
-      // Clear the input so the same file can be selected again
       input.value = '';
     } catch (err) {
       console.error('❌ Failed to read uploaded file:', err);
@@ -1007,7 +995,6 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     }
   }
 
-  // Enhanced PDF Loading Methods
   async loadPdfFromUrl(url: string) {
     console.log('🌐 Loading PDF from URL:', url);
     this.currentFileName = this.extractFileNameFromUrl(url);
@@ -1041,7 +1028,7 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     
     const extension = fileName.split('.').pop() || '';
     const nameWithoutExt = fileName.substring(0, fileName.length - extension.length - 1);
-    const availableLength = maxLength - extension.length - 4; // 4 for "..." and "."
+    const availableLength = maxLength - extension.length - 4;
     
     return nameWithoutExt.substring(0, availableLength) + '...' + '.' + extension;
   }
@@ -1058,7 +1045,6 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
       let loadingTask;
       
       if (this.currentPdfData) {
-        // Load from ArrayBuffer (uploaded file)
         console.log('📄 Loading PDF from ArrayBuffer data');
         loadingTask = pdfjsLib.getDocument({
           data: this.currentPdfData,
@@ -1069,13 +1055,11 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
           useWorkerFetch: false,
           disableAutoFetch: false,
           disableStream: false,
-          // Enhanced options for better local file handling
           standardFontDataUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/standard_fonts/',
           isEvalSupported: false,
           isOffscreenCanvasSupported: false
         });
       } else if (this.currentPdfUrl || this.pdfUrl) {
-        // Load from URL
         const url = this.currentPdfUrl || this.pdfUrl;
         console.log('🌐 Loading PDF from URL:', url);
         loadingTask = pdfjsLib.getDocument({
@@ -1127,7 +1111,6 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     }
   }
 
-  // Key method for fixing canvas render conflicts
   private cancelCurrentRender() {
     if (this.currentRenderTask) {
       try {
@@ -1142,7 +1125,6 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     this.pendingRender = false;
   }
 
-  // Safe render method that prevents overlapping renders
   private async safeRenderPage() {
     if (this.isRendering) {
       this.pendingRender = true;
@@ -1153,7 +1135,6 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     this.cancelCurrentRender();
     await this.renderPage();
 
-    // Handle any pending render requests
     if (this.pendingRender) {
       this.pendingRender = false;
       setTimeout(() => this.safeRenderPage(), 50);
@@ -1197,7 +1178,7 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
       canvas.style.width = Math.floor(viewport.width / devicePixelRatio) + 'px';
       canvas.style.height = Math.floor(viewport.height / devicePixelRatio) + 'px';
       
-      console.log(`Rendering page ${this.currentPage} at zoom ${this.currentZoom} (render scale: ${renderScale}, DPR: ${devicePixelRatio})`);
+      console.log(`Rendering page ${this.currentPage} at zoom ${this.currentZoom}`);
       
       context.clearRect(0, 0, canvas.width, canvas.height);
       this.optimizeCanvasRendering(canvas, context);
@@ -1209,11 +1190,9 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
         renderInteractiveForms: false
       };
 
-      // Store the render task so we can cancel it if needed
       this.currentRenderTask = page.render(renderContext);
       await this.currentRenderTask.promise;
       
-      // Clear the render task reference on successful completion
       this.currentRenderTask = null;
       
       if (this.enableTextSelection) {
@@ -1221,11 +1200,10 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
         await this.renderTextLayer(page, textViewport);
       }
       
-      console.log('✅ Page rendered successfully with enhanced quality');
+      console.log('✅ Page rendered successfully');
       this.setupCanvasClickListener();
       
     } catch (err: any) {
-      // Handle cancellation gracefully
       if (err.name === 'RenderingCancelledException' || err.message?.includes('cancel')) {
         console.log('🚫 Render was cancelled (this is normal)');
         return;
@@ -1264,14 +1242,13 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
       textLayerDiv.style.width = viewport.width + 'px';
       textLayerDiv.style.height = viewport.height + 'px';
 
-      // Always rebuild text data for new pages or when switching between files
       if (this.normalizedTextChars.length === 0 || this.hasPageChanged()) {
         await this.buildNormalizedTextData(textContent, page);
       }
 
       this.updateDisplayCoordinates();
 
-      console.log(`✅ Text layer rendered with ${this.displayTextChars.length} characters at zoom ${this.currentZoom}`);
+      console.log(`✅ Text layer rendered with ${this.displayTextChars.length} characters`);
       
     } catch (err) {
       console.warn('⚠️ Error rendering text layer:', err);
@@ -1279,8 +1256,6 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
   }
 
   private hasPageChanged(): boolean {
-    // For simplicity, we'll rebuild text data for each render to ensure consistency
-    // This ensures proper text selection for both local and remote PDFs
     return true;
   }
 
@@ -1345,7 +1320,7 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
       });
 
     this.textLines = sortedLines;
-    console.log(`📝 Built normalized text data: ${this.normalizedTextChars.length} characters, ${this.textLines.length} lines`);
+    console.log(`📝 Built normalized text data: ${this.normalizedTextChars.length} characters`);
   }
 
   private updateDisplayCoordinates() {
@@ -1365,6 +1340,7 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     event.stopPropagation();
     
     this.closePopupFast();
+    this.showDialog = false; // NEW: Close dialog when starting new selection
     
     this.isSelecting = true;
     
@@ -1373,7 +1349,7 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     this.selectionEndChar = this.selectionStartChar;
     
     if (this.selectionStartChar) {
-      console.log('🎯 Selection started at char:', this.selectionStartChar.char, 'zoom:', this.currentZoom);
+      console.log('🎯 Selection started at char:', this.selectionStartChar.char);
     }
   }
 
@@ -1441,8 +1417,9 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     return minDistance <= CLICK_TOLERANCE * Math.sqrt(2) ? bestMatch : null;
   }
 
+  // UPDATED: Enhanced text layer click handler
   onTextLayerClick(event: MouseEvent) {
-    if (!this.hasActiveSelection || this.showPopup || this.isSelecting) {
+    if (!this.hasActiveSelection || this.showPopup || this.showDialog || this.isSelecting) {
       return;
     }
     
@@ -1459,11 +1436,18 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     
     if (this.isCharInCurrentSelection(clickedChar) && 
         this.currentSelection && this.isValidForPopup(this.currentSelection.text)) {
-      this.showPopup = true;
+      
+      // NEW: Choose between dialog and popup mode
+      if (this.useDialogMode) {
+        console.log('🎯 Opening dialog for text:', this.currentSelection.text.substring(0, 50));
+        this.showDialog = true;
+      } else {
+        this.showPopup = true;
+      }
       this.cdr.detectChanges();
-      console.log('🎯 Popup opened for selection');
+      console.log('🎯 Selection interface opened');
     } else if (this.isCharInCurrentSelection(clickedChar) && this.currentSelection) {
-      console.log('📝 Selection too short for popup (use Ctrl+C to copy):', this.currentSelection.text);
+      console.log('📝 Selection too short for interface (use Ctrl+C to copy):', this.currentSelection.text);
     }
   }
 
@@ -1563,6 +1547,7 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     return highlights;
   }
 
+  // UPDATED: Enhanced text selection creation with dialog support
   private createTextSelectionImmediate() {
     if (!this.selectionStartChar || !this.selectionEndChar) return;
     
@@ -1600,9 +1585,14 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     
     this.hasActiveSelection = true;
     
-    this.positionPopupImmediate(boundingRect);
-    
-    this.showPopup = false;
+    // NEW: Choose between dialog and popup mode
+    if (this.useDialogMode) {
+      // Don't show dialog immediately, wait for user click
+      this.showDialog = false;
+    } else {
+      this.positionPopupImmediate(boundingRect);
+      this.showPopup = false;
+    }
     
     this.cdr.detectChanges();
     
@@ -1611,7 +1601,7 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
       timestamp: new Date()
     });
     
-    console.log('✅ Text selected at zoom', this.currentZoom + ':', selectedText, '(click to show actions)');
+    console.log('✅ Text selected:', selectedText, this.useDialogMode ? '(dialog mode)' : '(popup mode)');
   }
 
   private positionPopupImmediate(boundingRect: DOMRect) {
@@ -1650,9 +1640,11 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     this.popupPosition = { x, y };
   }
 
+  // UPDATED: Clear selection with dialog support
   private clearSelectionCompletely() {
     this.hasActiveSelection = false;
     this.showPopup = false;
+    this.showDialog = false; // NEW: Also close dialog
     this.currentSelection = null;
     this.selectionStartChar = null;
     this.selectionEndChar = null;
@@ -1780,7 +1772,6 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     }
     this.cdr.detectChanges();
     
-    // Use safeRenderPage with longer delay for fullscreen transitions
     this.cancelCurrentRender();
     setTimeout(() => this.safeRenderPage(), 200);
   }
@@ -1799,7 +1790,6 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
       this.isFullscreen = false;
       this.cdr.detectChanges();
       
-      // Use safeRenderPage with delay for fullscreen exit
       this.cancelCurrentRender();
       setTimeout(() => this.safeRenderPage(), 200);
     }
@@ -1822,6 +1812,19 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     this.closePopup();
     this.clearSelectionCompletely();
     this.safeRenderPage();
+  }
+
+  // NEW: Dialog mode toggle handler
+  onDialogModeToggle() {
+    console.log('💬 Dialog mode toggled:', this.useDialogMode);
+    this.closePopup();
+    this.showDialog = false;
+    if (this.hasActiveSelection && this.currentSelection) {
+      // If we have an active selection, immediately show in the new mode
+      if (this.useDialogMode) {
+        this.showDialog = true;
+      }
+    }
   }
 
   async executeAction(action: PopupAction) {
@@ -1891,15 +1894,26 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     this.removeKeyboardListeners();
   }
 
+  // UPDATED: Document click handler with dialog support
   private onDocumentClick(event: Event) {
     const target = event.target as HTMLElement;
+    
+    // Check if click is inside dialog
+    if (this.showDialog) {
+      const dialogElement = target.closest('.selection-dialog');
+      if (!dialogElement) {
+        // Clicked outside dialog, but don't close automatically
+        // Let the dialog handle its own closing
+        return;
+      }
+    }
     
     if (this.showPopup && this.popup) {
       const popupElement = this.popup.nativeElement;
       if (!popupElement.contains(target)) {
         this.closePopup();
       }
-    } else if (this.hasActiveSelection) {
+    } else if (this.hasActiveSelection && !this.showDialog) {
       const textLayerElement = this.textLayer?.nativeElement;
       const canvasElement = this.canvas?.nativeElement;
       const readerContainer = target.closest('.pdf-reader-container');
@@ -1930,7 +1944,6 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     
     if (!clickedChar) return;
     
-    // Find word boundaries
     const word = this.selectWordAtChar(clickedChar);
     if (word) {
       this.createWordSelection(word);
@@ -1942,7 +1955,6 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
     const charIndex = char.charIndex;
     const allChars = this.normalizedTextChars;
     
-    // Find start of word (go backwards until we hit whitespace or punctuation)
     let startIndex = charIndex;
     while (startIndex > 0) {
       const prevChar = allChars[startIndex - 1];
@@ -1952,7 +1964,6 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
       startIndex--;
     }
     
-    // Find end of word (go forwards until we hit whitespace or punctuation)
     let endIndex = charIndex;
     while (endIndex < allChars.length - 1) {
       const nextChar = allChars[endIndex + 1];
@@ -1962,11 +1973,9 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
       endIndex++;
     }
     
-    // Extract the word text
     const wordChars = allChars.slice(startIndex, endIndex + 1);
     const wordText = wordChars.map(c => c.char).join('').trim();
     
-    // Only select if it's a valid word (not just punctuation or whitespace)
     if (wordText.length > 0 && /[a-zA-Z0-9]/.test(wordText)) {
       return { startIndex, endIndex, text: wordText };
     }
@@ -1975,20 +1984,25 @@ export class PdfReaderComponent implements OnInit, OnDestroy {
   }
 
   private isWordBoundary(char: string): boolean {
-    // Consider spaces, punctuation, and special characters as word boundaries
     return /[\s\.,;:!?\-\(\)\[\]{}'"\/\\]/.test(char);
   }
 
   private createWordSelection(word: {startIndex: number, endIndex: number, text: string}) {
-    // Set selection characters
     this.selectionStartChar = this.normalizedTextChars[word.startIndex];
     this.selectionEndChar = this.normalizedTextChars[word.endIndex];
     
-    // Update highlights
     this.updateHighlight();
-    
-    // Create the text selection
     this.createTextSelectionImmediate();
   }
-};
+
+  // NEW: Dialog event handlers
+  onDialogActionExecuted(event: any) {
+    console.log('🎯 Dialog action executed:', event);
+    this.actionExecuted.emit(event);
+  }
   
+  onDialogClosed() {
+    this.showDialog = false;
+    this.clearSelectionCompletely();
+  }
+}
